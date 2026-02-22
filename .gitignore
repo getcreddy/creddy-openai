@@ -1,0 +1,11 @@
+bin/
+*.exe
+*.test
+*.out
+go.work
+go.work.sum
+.idea/
+.vscode/
+*.swp
+.DS_Store
+*config*.json
