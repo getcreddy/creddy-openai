@@ -16,7 +16,6 @@ import (
 const (
 	PluginName    = "openai"
 	PluginVersion = "0.1.0"
-	OpenAIAPIBase = "https://api.openai.com/v1"
 )
 
 // OpenAIPlugin implements the Creddy Plugin interface for OpenAI
@@ -26,19 +25,29 @@ type OpenAIPlugin struct {
 
 // OpenAIConfig contains the plugin configuration
 type OpenAIConfig struct {
-	// AdminKey is an API key with admin permissions to create/delete keys
-	AdminKey string `json:"admin_key"`
-	// OrgID is the organization ID (optional, for org-scoped operations)
-	OrgID string `json:"org_id,omitempty"`
-	// ProjectID is the default project ID for scoped keys
-	ProjectID string `json:"project_id,omitempty"`
+	AdminKey string `json:"admin_key"` // Admin API key for managing keys
+}
+
+// openAIAPIKey represents an API key returned by the Admin API
+type openAIAPIKey struct {
+	Object    string `json:"object"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Key       string `json:"key"` // Only returned on creation (redacted otherwise)
+	CreatedAt int64  `json:"created_at"`
+}
+
+// openAIKeyListResponse represents the list keys response
+type openAIKeyListResponse struct {
+	Object string         `json:"object"`
+	Data   []openAIAPIKey `json:"data"`
 }
 
 func (p *OpenAIPlugin) Info(ctx context.Context) (*sdk.PluginInfo, error) {
 	return &sdk.PluginInfo{
 		Name:             PluginName,
 		Version:          PluginVersion,
-		Description:      "OpenAI API keys with project scoping",
+		Description:      "Ephemeral OpenAI API keys via Admin API",
 		MinCreddyVersion: "0.4.0",
 	}, nil
 }
@@ -46,14 +55,24 @@ func (p *OpenAIPlugin) Info(ctx context.Context) (*sdk.PluginInfo, error) {
 func (p *OpenAIPlugin) Scopes(ctx context.Context) ([]sdk.ScopeSpec, error) {
 	return []sdk.ScopeSpec{
 		{
-			Pattern:     "openai:*",
-			Description: "Full API access",
-			Examples:    []string{"openai:*"},
+			Pattern:     "openai",
+			Description: "Full access to the OpenAI API",
+			Examples:    []string{"openai"},
 		},
 		{
-			Pattern:     "openai:<project>",
-			Description: "Access scoped to a specific project",
-			Examples:    []string{"openai:proj_abc123"},
+			Pattern:     "openai:gpt",
+			Description: "Access to GPT models (chat completions)",
+			Examples:    []string{"openai:gpt"},
+		},
+		{
+			Pattern:     "openai:dall-e",
+			Description: "Access to DALL-E image generation",
+			Examples:    []string{"openai:dall-e"},
+		},
+		{
+			Pattern:     "openai:whisper",
+			Description: "Access to Whisper audio transcription",
+			Examples:    []string{"openai:whisper"},
 		},
 	}, nil
 }
@@ -68,10 +87,6 @@ func (p *OpenAIPlugin) Configure(ctx context.Context, configJSON string) error {
 		return fmt.Errorf("admin_key is required")
 	}
 
-	if !strings.HasPrefix(config.AdminKey, "sk-") {
-		return fmt.Errorf("admin_key must be a valid OpenAI API key (starts with sk-)")
-	}
-
 	p.config = &config
 	return nil
 }
@@ -81,26 +96,30 @@ func (p *OpenAIPlugin) Validate(ctx context.Context) error {
 		return fmt.Errorf("plugin not configured")
 	}
 
-	// Test the API key by listing models
-	req, err := http.NewRequestWithContext(ctx, "GET", OpenAIAPIBase+"/models", nil)
+	// Test the admin key by listing existing keys
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.openai.com/v1/organization/api_keys", nil)
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+p.config.AdminKey)
-	if p.config.OrgID != "" {
-		req.Header.Set("OpenAI-Organization", p.config.OrgID)
-	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to connect to OpenAI: %w", err)
+		return fmt.Errorf("failed to validate admin key: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("invalid admin key")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("admin key does not have permission to manage API keys")
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("OpenAI API error (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("openai API error (%d): %s", resp.StatusCode, string(body))
 	}
 
 	return nil
@@ -111,30 +130,24 @@ func (p *OpenAIPlugin) GetCredential(ctx context.Context, req *sdk.CredentialReq
 		return nil, fmt.Errorf("plugin not configured")
 	}
 
-	// Parse scope for project ID
-	projectID := p.config.ProjectID
-	if strings.HasPrefix(req.Scope, "openai:") && req.Scope != "openai:*" {
-		projectID = strings.TrimPrefix(req.Scope, "openai:")
-	}
+	// Create a new API key with a unique name
+	name := fmt.Sprintf("creddy-%s-%d", req.Agent.Name, time.Now().UnixNano())
 
-	// Create a new API key
-	keyName := fmt.Sprintf("creddy-%s-%d", req.Agent.Name, time.Now().Unix())
-	
-	apiKey, keyID, err := p.createAPIKey(ctx, keyName, projectID)
+	apiKey, err := p.createAPIKey(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
-	// Calculate expiry (OpenAI keys don't have native TTL, we track it ourselves)
-	expiresAt := time.Now().Add(req.TTL)
-
+	// OpenAI keys don't have inherent expiry - Creddy manages TTL
+	// The key ID is stored as ExternalID for revocation
 	return &sdk.Credential{
-		Value:      apiKey,
-		ExpiresAt:  expiresAt,
-		ExternalID: keyID,
+		Value:      apiKey.Key,
+		ExternalID: apiKey.ID,
+		ExpiresAt:  time.Now().Add(req.TTL),
 		Metadata: map[string]string{
-			"key_name":   keyName,
-			"project_id": projectID,
+			"key_id":   apiKey.ID,
+			"key_name": name,
+			"scope":    req.Scope,
 		},
 	}, nil
 }
@@ -148,76 +161,68 @@ func (p *OpenAIPlugin) RevokeCredential(ctx context.Context, externalID string) 
 }
 
 func (p *OpenAIPlugin) MatchScope(ctx context.Context, scope string) (bool, error) {
-	return strings.HasPrefix(scope, "openai:"), nil
+	// Match "openai" or "openai:*"
+	if scope == "openai" {
+		return true, nil
+	}
+	if !strings.HasPrefix(scope, "openai:") {
+		return false, nil
+	}
+
+	// Validate known sub-scopes
+	subScope := strings.TrimPrefix(scope, "openai:")
+	validScopes := map[string]bool{
+		"gpt":     true,
+		"dall-e":  true,
+		"whisper": true,
+	}
+
+	return validScopes[subScope], nil
 }
 
-// createAPIKey creates a new API key via the OpenAI Admin API
-func (p *OpenAIPlugin) createAPIKey(ctx context.Context, name, projectID string) (string, string, error) {
-	// OpenAI's API key management endpoint
-	// Note: This uses the organization API keys endpoint
-	url := "https://api.openai.com/v1/organization/api_keys"
+// --- OpenAI Admin API helpers ---
 
-	reqBody := map[string]interface{}{
+func (p *OpenAIPlugin) createAPIKey(ctx context.Context, name string) (*openAIAPIKey, error) {
+	reqBody, _ := json.Marshal(map[string]interface{}{
 		"name": name,
-	}
-	if projectID != "" {
-		reqBody["project_id"] = projectID
-	}
+	})
 
-	bodyJSON, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/organization/api_keys", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+p.config.AdminKey)
 	req.Header.Set("Content-Type", "application/json")
-	if p.config.OrgID != "" {
-		req.Header.Set("OpenAI-Organization", p.config.OrgID)
-	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create API key: %w", err)
+		return nil, fmt.Errorf("failed to create API key: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", "", fmt.Errorf("OpenAI API error (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai API error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	var result struct {
-		ID     string `json:"id"`
-		Key    string `json:"key"`
-		Secret string `json:"secret"` // Some API versions use this
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	var key openAIAPIKey
+	if err := json.Unmarshal(body, &key); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	apiKey := result.Key
-	if apiKey == "" {
-		apiKey = result.Secret
-	}
-
-	return apiKey, result.ID, nil
+	return &key, nil
 }
 
-// deleteAPIKey deletes an API key
 func (p *OpenAIPlugin) deleteAPIKey(ctx context.Context, keyID string) error {
-	url := fmt.Sprintf("https://api.openai.com/v1/organization/api_keys/%s", keyID)
-
-	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", "https://api.openai.com/v1/organization/api_keys/"+keyID, nil)
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+p.config.AdminKey)
-	if p.config.OrgID != "" {
-		req.Header.Set("OpenAI-Organization", p.config.OrgID)
-	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -225,9 +230,10 @@ func (p *OpenAIPlugin) deleteAPIKey(ctx context.Context, keyID string) error {
 	}
 	defer resp.Body.Close()
 
+	// Accept 200, 204, or 404 (already deleted) as success
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("OpenAI API error (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("openai API error (%d): %s", resp.StatusCode, string(body))
 	}
 
 	return nil
