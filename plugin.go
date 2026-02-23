@@ -88,6 +88,11 @@ func (p *OpenAIPlugin) ConfigSchema(ctx context.Context) ([]sdk.ConfigField, err
 	}, nil
 }
 
+func (p *OpenAIPlugin) Constraints(ctx context.Context) (*sdk.Constraints, error) {
+	// OpenAI API keys don't have inherent TTL limits - Creddy manages expiration via revocation
+	return nil, nil
+}
+
 func (p *OpenAIPlugin) Configure(ctx context.Context, configJSON string) error {
 	var config OpenAIConfig
 	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
