@@ -77,6 +77,17 @@ func (p *OpenAIPlugin) Scopes(ctx context.Context) ([]sdk.ScopeSpec, error) {
 	}, nil
 }
 
+func (p *OpenAIPlugin) ConfigSchema(ctx context.Context) ([]sdk.ConfigField, error) {
+	return []sdk.ConfigField{
+		{
+			Name:        "admin_key",
+			Type:        "secret",
+			Description: "OpenAI Admin API key (for managing API keys)",
+			Required:    true,
+		},
+	}, nil
+}
+
 func (p *OpenAIPlugin) Configure(ctx context.Context, configJSON string) error {
 	var config OpenAIConfig
 	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
