@@ -4,7 +4,18 @@ Creddy plugin for ephemeral OpenAI API keys.
 
 ## Overview
 
-This plugin creates and manages ephemeral OpenAI API keys using the OpenAI Admin API. Keys are created on-demand and automatically revoked when they expire or are no longer needed.
+This plugin creates and manages ephemeral OpenAI API keys using the OpenAI Admin API. Keys are created as service accounts on-demand and automatically revoked when they expire or are no longer needed.
+
+## Prerequisites
+
+### Create an Admin API Key
+
+1. Go to [platform.openai.com/settings/organization/admin-keys](https://platform.openai.com/settings/organization/admin-keys)
+2. Click **Create admin key**
+3. Give it a name (e.g., "creddy")
+4. Copy the key — it starts with `sk-admin-`
+
+> **Important:** Admin API keys are different from regular API keys. They can only be created by organization owners and are used for administrative operations like managing service accounts.
 
 ## Installation
 
@@ -27,11 +38,12 @@ Add the OpenAI backend to Creddy:
 creddy backend add openai --admin-key "sk-admin-..."
 ```
 
-### Required Settings
+### Settings
 
-| Setting | Description |
-|---------|-------------|
-| `admin_key` | OpenAI Admin API key with permission to manage API keys |
+| Setting | Required | Description |
+|---------|----------|-------------|
+| `admin_key` | Yes | OpenAI Admin API key (`sk-admin-...`) |
+| `project_id` | No | Project ID for service accounts. Defaults to first active project. |
 
 ## Scopes
 
@@ -42,7 +54,7 @@ creddy backend add openai --admin-key "sk-admin-..."
 | `openai:dall-e` | Access to DALL-E image generation |
 | `openai:whisper` | Access to Whisper audio transcription |
 
-> **Note:** OpenAI API keys currently provide full API access. Scopes are informational and used for policy enforcement within Creddy. Future OpenAI API updates may support scoped keys natively.
+> **Note:** OpenAI API keys currently provide full API access. Scopes are informational and used for policy enforcement within Creddy.
 
 ## Usage
 
@@ -57,16 +69,36 @@ creddy get openai --scope "openai:gpt"
 creddy get openai --scope "openai:dall-e"
 ```
 
+## How It Works
+
+1. Agent requests a credential with a TTL
+2. Plugin creates a new service account via Admin API
+3. Service account creation returns an API key (`sk-svcacct-...`)
+4. Creddy tracks the TTL and service account ID
+5. On expiration, plugin deletes the service account
+6. Key is immediately invalidated
+
+### API Endpoints Used
+
+```
+GET  /v1/organization/projects                                    # List projects
+POST /v1/organization/projects/{project_id}/service_accounts      # Create service account + key
+DELETE /v1/organization/projects/{project_id}/service_accounts/{id}  # Revoke key
+```
+
 ## Development
+
+### Building
+
+```bash
+make build
+```
 
 ### Standalone Testing
 
 The plugin can run standalone for testing without Creddy:
 
 ```bash
-# Build
-make build
-
 # Show plugin info
 make info
 
@@ -81,8 +113,20 @@ echo '{
 # Validate configuration
 make validate CONFIG=test-config.json
 
-# Get a credential
+# Get a credential (creates service account, returns key)
 make get CONFIG=test-config.json SCOPE="openai"
+```
+
+### Integration Tests
+
+Run the integration test suite (requires `OPENAI_ADMIN_KEY` env var):
+
+```bash
+# Run all integration tests
+make integration-test
+
+# Or directly
+OPENAI_ADMIN_KEY=sk-admin-... go test -v -tags=integration ./...
 ```
 
 ### Dev Mode
@@ -93,23 +137,10 @@ Auto-rebuild and install on file changes:
 make dev
 ```
 
-### Testing
-
-```bash
-make test
-```
-
-## How It Works
-
-1. Plugin uses the OpenAI Admin API to create a new API key
-2. Key ID is stored as ExternalID for later revocation
-3. Creddy manages TTL and revokes the key when it expires
-4. On revocation, the key is deleted via the Admin API
-
 ## Requirements
 
-- OpenAI account with Admin API access
-- Admin API key with `api_keys:write` permission
+- OpenAI organization account
+- Admin API key (organization owner required to create)
 
 ## License
 
