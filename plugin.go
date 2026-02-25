@@ -15,7 +15,7 @@ import (
 
 const (
 	PluginName    = "openai"
-	PluginVersion = "0.2.0"
+	PluginVersion = "0.0.1"
 	BaseURL       = "https://api.openai.com/v1"
 )
 
