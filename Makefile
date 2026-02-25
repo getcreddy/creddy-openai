@@ -1,4 +1,4 @@
-.PHONY: build test clean install dev info validate
+.PHONY: build test clean install dev info validate integration-test test-integration
 
 BINARY_NAME=creddy-openai
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -32,7 +32,7 @@ test:
 	go test -v ./...
 
 # Run integration tests (requires OPENAI_ADMIN_KEY)
-integration-test:
+integration-test test-integration:
 	go test -v -tags=integration ./...
 
 # Clean build artifacts
