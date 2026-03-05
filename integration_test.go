@@ -184,14 +184,14 @@ func TestIntegration_FullCredentialLifecycle(t *testing.T) {
 	if !strings.HasPrefix(cred.Value, "sk-svcacct-") {
 		t.Errorf("expected key to start with sk-svcacct-, got: %s...", cred.Value[:20])
 	}
-	if cred.ExternalID == "" {
+	if cred.Credential == "" {
 		t.Fatal("expected external ID (service account ID)")
 	}
 	if cred.ExpiresAt.IsZero() {
 		t.Fatal("expected expiration time")
 	}
 
-	t.Logf("Created credential: key=%s..., service_account=%s", cred.Value[:30], cred.ExternalID)
+	t.Logf("Created credential: key=%s..., service_account=%s", cred.Value[:30], cred.Credential)
 	t.Logf("Full key length: %d", len(cred.Value))
 
 	// Wait for key to propagate (OpenAI has eventual consistency)
@@ -217,8 +217,8 @@ func TestIntegration_FullCredentialLifecycle(t *testing.T) {
 	})
 
 	// Revoke credential
-	t.Logf("Revoking service account: %s (project: %s)", cred.ExternalID, plugin.config.ProjectID)
-	err = plugin.RevokeCredential(context.Background(), cred.ExternalID)
+	t.Logf("Revoking service account: %s (project: %s)", cred.Credential, plugin.config.ProjectID)
+	err = plugin.RevokeCredential(context.Background(), cred.Credential)
 	if err != nil {
 		t.Fatalf("RevokeCredential() error: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestIntegration_APIKeyUsage(t *testing.T) {
 	}
 	defer func() {
 		// Clean up
-		plugin.RevokeCredential(context.Background(), cred.ExternalID)
+		plugin.RevokeCredential(context.Background(), cred.Credential)
 	}()
 
 	// Wait for key to propagate (OpenAI has eventual consistency - can take up to 10s)

@@ -190,7 +190,7 @@ func (p *OpenAIPlugin) GetCredential(ctx context.Context, req *sdk.CredentialReq
 	// Store service account ID as ExternalID for revocation
 	return &sdk.Credential{
 		Value:      sa.APIKey.Value,
-		ExternalID: sa.ID, // Service account ID, not key ID
+		Credential: sa.ID, // Service account ID, not key ID
 		ExpiresAt:  time.Now().Add(req.TTL),
 		Metadata: map[string]string{
 			"service_account_id":   sa.ID,
