@@ -2,7 +2,7 @@ module github.com/getcreddy/creddy-openai
 
 go 1.24.0
 
-require github.com/getcreddy/creddy-plugin-sdk v0.0.1
+require github.com/getcreddy/creddy-plugin-sdk v0.0.2
 
 require (
 	github.com/fatih/color v1.13.0 // indirect
